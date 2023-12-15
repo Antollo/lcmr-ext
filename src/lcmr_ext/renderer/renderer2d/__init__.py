@@ -1,0 +1,2 @@
+from .pydiffvg_renderer2d import PyDiffVgRenderer2D
+from .pytorch3d_renderer2d import PyTorch3DRenderer2D
