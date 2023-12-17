@@ -2,13 +2,14 @@ import torch
 import random
 import numpy as np
 from torch.utils.data import Dataset
-from multiprocess import Pool
+from torch.multiprocessing import Pool, set_start_method
 from itertools import repeat
 from more_itertools import chunked, flatten
 from math import ceil
 from pathlib import Path
 import pickle
 from PIL import Image, ImageFont, ImageDraw, ImageOps
+import platform
 
 from typing import Type
 
@@ -16,6 +17,12 @@ from lcmr.renderer.renderer2d import Renderer2D
 from lcmr_ext.renderer.renderer2d import PyTorch3DRenderer2D
 from lcmr_ext.utils import optimize_params
 
+if platform.system() == "Linux":
+    try:
+        set_start_method("spawn")
+    except RuntimeError:
+        pass
+                
 font_file = "fonts-DSEG_v050b1/DSEG7-Classic-MINI/DSEG7ClassicMini-Bold.ttf"
 if not Path(font_file).is_file():
     import urllib.request
