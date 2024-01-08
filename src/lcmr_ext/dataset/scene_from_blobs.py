@@ -59,8 +59,9 @@ class SceneFromBlobs:
 
         # maybe call 'single_img_inner' in loop
 
-        # params = self.single_img_inner(img_np)
-        # append_new(params)
+        params = self.single_img_inner(img_np, num_blobs=num_blobs * 2)
+        if len(params[0]) > 0:
+            append_new(params)
 
         params = self.single_img_inner(downscale_local_mean(img_np, (2, 1, 1)), num_blobs=num_blobs * 2)
         if len(params[0]) > 0:
@@ -134,7 +135,7 @@ class SceneFromBlobs:
         translation, scale, color, confidence, angle = [group[:, :, mask] for group in param_groups]
         return Scene.from_tensors(translation=translation, scale=scale, color=color, confidence=confidence, angle=angle)
 
-    def single_img_inner(self, img: NDArray[Shape["W, H, 3"], np.float32], num_blobs=14):
+    def single_img_inner(self, img: NDArray[Shape["W, H, 3"], np.float32], num_blobs: int):
         img_gray = rgb2gray(img)
         width, height = img_gray.shape
 
