@@ -1,84 +1,93 @@
 import torch
 import torch.nn as nn
 from torchtyping import TensorType
+from transformers.models.detr.modeling_detr import DetrEncoder, DetrDecoder, DetrMLPPredictionHead, build_position_encoding
+from transformers.models.detr import DetrConfig
 
 from lcmr.grammar import Scene
 from lcmr.modeler import Modeler
 from lcmr.utils.guards import typechecked, batch_dim, reduced_height_dim, reduced_width_dim, channel_dim
 
-# https://colab.research.google.com/github/facebookresearch/detr/blob/colab/notebooks/detr_demo.ipynb#scrollTo=h91rsIPl7tVl
+# Adapted from: transformers.models.detr.DetrModel, https://github.com/huggingface/transformers/blob/main/src/transformers/models/detr/modeling_detr.py
 
 
 @typechecked
 class DETRModeler(Modeler):
-    """
-    Demo DETR implementation.
-
-    Demo implementation of DETR in minimal number of lines, with the
-    following differences wrt DETR in the paper:
-    * learned positional encoding (instead of sine)
-    * positional encoding is passed at input (instead of attention)
-    * fc bbox predictor (instead of MLP)
-    The model achieves ~40 AP on COCO val5k and runs at ~28 FPS on Tesla V100.
-    Only batch size 1 supported.
-    """
-
-    def __init__(self, hidden_dim=128, nheads=2, num_encoder_layers=4, num_decoder_layers=4, num_queries=7):
+    def __init__(self, config: DetrConfig = DetrConfig(), encoder_feature_dim: int = 2048, prediction_head_layers: int = 3):
         super().__init__()
 
-        self.conv = nn.Conv2d(2048, hidden_dim, 1)
+        self.input_projection = nn.Conv2d(encoder_feature_dim, config.d_model, kernel_size=1)
+        self.query_position_embedding = nn.Embedding(config.num_queries, config.d_model)
+        self.position_encoding = build_position_encoding(config)
 
-        # create a default PyTorch transformer
-        self.transformer = nn.Transformer(hidden_dim, nheads, num_encoder_layers, num_decoder_layers, batch_first=True, dropout=0.0)
-        # UWAGA: dropout w tym transformerze bardzo przeszkadza!
+        self.encoder = DetrEncoder(config)
+        self.decoder = DetrDecoder(config)
 
-        # prediction heads, one extra class for predicting non-empty slots
-        # note that in baseline DETR linear_bbox layer is 3-layer MLP
-        self.to_translation = nn.Linear(hidden_dim, 2)
-        self.to_scale = nn.Linear(hidden_dim, 2)
-        self.to_color = nn.Linear(hidden_dim, 3)
-        self.to_confidence = nn.Linear(hidden_dim, 1)
-        # self.to_angle = nn.Linear(hidden_dim, 1)
-        self.to_angle_a = nn.Linear(hidden_dim, 1)
-        self.to_angle_b = nn.Linear(hidden_dim, 1)
+        # prediction heads
+        def make_head(output_dim: int):
+            return DetrMLPPredictionHead(input_dim=config.d_model, hidden_dim=config.d_model, output_dim=output_dim, num_layers=prediction_head_layers)
 
-        # output positional encodings (object queries)
-        self.query_pos = nn.Parameter(torch.rand(num_queries, hidden_dim))
-
-        # spatial positional encodings
-        # note that in baseline DETR we use sine positional encodings
-        self.row_embed = nn.Parameter(torch.rand(50, hidden_dim // 2))
-        self.col_embed = nn.Parameter(torch.rand(50, hidden_dim // 2))
+        self.to_translation = make_head(output_dim=2)
+        self.to_scale = make_head(output_dim=2)
+        self.to_color = make_head(output_dim=3)
+        self.to_confidence = make_head(output_dim=1)
+        self.to_angle = make_head(output_dim=2)
 
     def forward(self, x: TensorType[batch_dim, reduced_height_dim, reduced_width_dim, channel_dim, torch.float32]) -> Scene:
-        # convert from 2048 to 256 feature planes for the transformer
-        batch_len = x.shape[0]
-        h = self.conv(x)
+        device = next(self.parameters()).device
+        batch_size, num_channels, height, width = x.shape
 
-        # construct positional encodings
-        H, W = h.shape[-2:]
-        pos = (
-            torch.cat(
-                [
-                    self.col_embed[:W].unsqueeze(0).repeat(H, 1, 1),
-                    self.row_embed[:H].unsqueeze(1).repeat(1, W, 1),
-                ],
-                dim=-1,
-            )
-            .flatten(0, 1)
-            .unsqueeze(0)
+        # First, prepare the position embeddings
+        pixel_mask = torch.ones(((batch_size, height, width)), device=device)
+        object_queries = self.position_encoding(x, pixel_mask)
+
+        # Second, apply 1x1 convolution to reduce the channel dimension to d_model (256 by default)
+        features = self.input_projection(x)
+
+        # Third, flatten the feature map + position embeddings of shape NxCxHxW to NxCxHW, and permute it to NxHWxC
+        # In other words, turn their shape into (batch_size, sequence_length, hidden_size)
+        flattened_features = features.flatten(2).permute(0, 2, 1)
+        object_queries = object_queries.flatten(2).permute(0, 2, 1)
+        flattened_mask = pixel_mask.flatten(1)
+
+        # Fourth, sent flattened_features + flattened_mask + position embeddings through encoder
+        # flattened_features is a Tensor of shape (batch_size, heigth*width, hidden_size)
+        # flattened_mask is a Tensor of shape (batch_size, heigth*width)
+
+        encoder_outputs = self.encoder(
+            inputs_embeds=flattened_features,
+            attention_mask=flattened_mask,
+            object_queries=object_queries,
         )
 
-        # propagate through the transformer
-        h = self.transformer(pos + 0.1 * h.flatten(2).transpose(-1, -2), self.query_pos.unsqueeze(0).repeat(batch_len, 1, 1))
+        # Fifth, sent query embeddings + object_queries through the decoder (which is conditioned on the encoder output)
+        query_position_embedding = self.query_position_embedding.weight.unsqueeze(0).repeat(batch_size, 1, 1)
+        queries = torch.zeros_like(query_position_embedding)
 
-        # finally project transformer outputs to class labels and bounding boxes
-        return Scene.from_tensors(
-            translation=torch.sigmoid(self.to_translation(h)).unsqueeze(1),
-            scale=torch.sigmoid(self.to_scale(h)).unsqueeze(1),
-            color=torch.sigmoid(self.to_color(h)).unsqueeze(1),
-            confidence=torch.sigmoid(self.to_confidence(h)).unsqueeze(1),
-            angle=torch.atan2(torch.tanh(self.to_angle_a(h)), torch.tanh(self.to_angle_b(h))).unsqueeze(
-                1
-            ),  # torch.sigmoid(self.to_angle(h)).unsqueeze(1) * np.pi * 2
-        ).to(next(self.parameters()).device)
+        # Decoder outputs consists of (dec_features, dec_hidden, dec_attn)
+        decoder_outputs = self.decoder(
+            inputs_embeds=queries,
+            attention_mask=None,
+            object_queries=object_queries,
+            query_position_embeddings=query_position_embedding,
+            encoder_hidden_states=encoder_outputs[0],
+            encoder_attention_mask=flattened_mask,
+        )
+        hidden_state = decoder_outputs.last_hidden_state
+
+        # Finally project transformer outputs to scene
+        translation = torch.sigmoid(self.to_translation(hidden_state)).unsqueeze(1)
+        scale = torch.sigmoid(self.to_scale(hidden_state)).unsqueeze(1)
+        color = torch.sigmoid(self.to_color(hidden_state)).unsqueeze(1)
+        confidence = torch.sigmoid(self.to_confidence(hidden_state)).unsqueeze(1)
+        rotation_vec = torch.tanh(self.to_angle(hidden_state))
+        rotation_vec = nn.functional.normalize(rotation_vec, dim=-1)
+        angle = torch.atan2(rotation_vec[..., 0, None], rotation_vec[..., 1, None]).unsqueeze(1)
+
+        return Scene.from_tensors_sparse(
+            translation=translation,
+            scale=scale,
+            color=color,
+            confidence=confidence,
+            angle=angle,
+        ).to(device)

@@ -15,9 +15,9 @@ class RandomDataset(Dataset):
         object_len = options.num_blobs
 
         scenes = [
-            Scene.from_tensors(
+            Scene.from_tensors_sparse(
                 torch.rand(1, 1, object_len, 2),
-                torch.rand(1, 1, object_len, 2) / 5 + 0.01,
+                torch.rand(1, 1, object_len, 2) / 5 + 0.05,
                 torch.rand(1, 1, object_len, 1),
                 torch.rand(1, 1, object_len, 3),
                 torch.rand(1, 1, object_len, 1) / 4 + 0.75,

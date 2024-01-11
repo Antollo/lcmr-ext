@@ -90,7 +90,7 @@ class SceneFromBlobs:
         mask = torch.zeros((count,), dtype=torch.bool)
 
         translation, scale, color, confidence, angle = param_groups
-        scene = Scene.from_tensors(translation=translation, scale=scale, color=color, confidence=confidence, angle=angle)
+        scene = Scene.from_tensors_sparse(translation=translation, scale=scale, color=color, confidence=confidence, angle=angle)
 
         for _ in range(num_blobs * 2):
             best_idx = -1
@@ -133,7 +133,7 @@ class SceneFromBlobs:
                 mask[best_idx] = False
 
         translation, scale, color, confidence, angle = [group[:, :, mask] for group in param_groups]
-        return Scene.from_tensors(translation=translation, scale=scale, color=color, confidence=confidence, angle=angle)
+        return Scene.from_tensors_sparse(translation=translation, scale=scale, color=color, confidence=confidence, angle=angle)
 
     def single_img_inner(self, img: NDArray[Shape["W, H, 3"], np.float32], num_blobs: int):
         img_gray = rgb2gray(img)
