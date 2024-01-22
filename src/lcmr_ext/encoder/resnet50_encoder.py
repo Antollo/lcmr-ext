@@ -9,10 +9,10 @@ from lcmr.utils.guards import typechecked, batch_dim, height_dim, width_dim, red
 
 @typechecked
 class ResNet50Encoder(Encoder):
-    def __init__(self):
+    def __init__(self, replace_stride_with_dilation: [bool, bool, bool] = [False, False, False]):
         super().__init__()
         weights = ResNet50_Weights.DEFAULT
-        model = resnet50(weights=weights)
+        model = resnet50(weights=weights, replace_stride_with_dilation=replace_stride_with_dilation)
 
         self.model = nn.Sequential(*list(model.children())[:-2])
 
