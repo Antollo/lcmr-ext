@@ -12,13 +12,14 @@ from lcmr_ext.renderer.renderer2d import PyTorch3DRenderer2D
 @dataclass
 class DatasetOptions:
     data_len: int = 0
-    cache_filename: str = ""
     seed: int = 123
     num_blobs: int = 7
     background_color: TensorType[4, torch.float32] = torch.tensor([0.0, 0.0, 0.0, 1.0])
     raster_size: tuple[int, int] = (128, 128)
-    pool_size: int = 8
-    device: torch.device = torch.device("cpu")
     Renderer: Type[Renderer2D] = PyTorch3DRenderer2D
-    use_cache: bool = True
     scenes: bool = True
+    device: torch.device = torch.device("cpu")
+    concurrent: bool = True
+    pool_size: int = 8
+    use_cache: bool = False
+    cache_filename: str = ""
