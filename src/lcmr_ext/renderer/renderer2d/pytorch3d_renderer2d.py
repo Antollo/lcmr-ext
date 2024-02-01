@@ -16,7 +16,7 @@ from pytorch3d.renderer import (
 )
 from pytorch3d.renderer.mesh.shader import ShaderBase, Fragments
 from pytorch3d.ops import interpolate_face_attributes
-from skimage.morphology import disk
+import warnings
 
 from lcmr.grammar import Scene
 from lcmr.renderer.renderer2d import Renderer2D
@@ -52,7 +52,37 @@ def simple_flat_shading_rgba(meshes, fragments, lights, cameras, materials) -> t
     return colors
 
 
-#closing_kernel = torch.from_numpy(disk(5, dtype=np.float32)).to("cuda:0")
+def select_max_value_for_each_index(indices, values):
+    # loop, this is bad
+    for i in range(int(torch.max(indices).item()) + 1):
+        mask = indices == i
+        max_v, max_i = (values * mask).max(dim=-1, keepdim=True)
+        values[mask] = 0
+        values = values.scatter_add(3, index=max_i, src=max_v)
+    return values
+
+# If scatter_add_ (inplace) or something similar had atomic GPU implementation 
+# we would be able to parallelize the function above using torch.compile or tracing.
+
+# torch.compile mess up the function
+# select_max_value_for_each_index = torch.compile(select_max_value_for_each_index)
+
+# batch_size = 128
+# raster_size = (128, 128)
+# size = (batch_size, *raster_size, faces_per_pixel)
+# select_max_value_for_each_index = torch.jit.trace(
+#     select_max_value_for_each_index, (torch.randint(0, faces_per_pixel, size=size).cuda(), torch.rand(size=size).cuda())
+# )
+
+# select_max_value_for_each_index_impl = select_max_value_for_each_index
+# select_max_value_for_each_index_dict = {}
+# def select_max_value_for_each_index(indices, values):
+#    key = int(torch.max(indices).item())
+#    if key not in select_max_value_for_each_index_dict:
+#        with warnings.catch_warnings():
+#            warnings.simplefilter("ignore")
+#            select_max_value_for_each_index_dict[key] = torch.jit.trace(select_max_value_for_each_index_impl, (indices, values))
+#    return select_max_value_for_each_index_dict[key](indices, values)
 
 
 def simple_flat_rgba_blend(colors: torch.Tensor, fragments, blend_params: BlendParams) -> torch.Tensor:
@@ -75,11 +105,12 @@ def simple_flat_rgba_blend(colors: torch.Tensor, fragments, blend_params: BlendP
     Returns:
         RGBA pixel_colors: (N, H, W, 4)
     """
-    
-    #N, H, W, K = fragments.pix_to_face.shape
-    
-    prob_map = torch.sigmoid(-(fragments.dists - 0.0004) / blend_params.sigma)
-    colors[..., 3] *= prob_map#**0.1
+
+    # N, H, W, K = fragments.pix_to_face.shape
+
+    # 0.0005 "enlarge" the triangles by a bit, reduce weird artifact on the edges
+    prob_map = torch.sigmoid(-(fragments.dists - 0.0005) / blend_params.sigma)
+    colors[..., 3] *= prob_map
 
     # each "layer" (dimension named "K") in colors represents i-th face (triangle) present in this pixel
     # unfortunately more than one face of the same object may be presents
@@ -101,31 +132,24 @@ def simple_flat_rgba_blend(colors: torch.Tensor, fragments, blend_params: BlendP
 
     # assign each object to separate "layer"
     # downside: "layer" number limits how many objects we can have
-    # TODO: better solution is to divide alphas by object reps in each pixel ()
-    new_colors = torch.zeros_like(colors)
-    new_colors.scatter_reduce_(-2, torch.broadcast_to(index, colors.shape), colors, reduce="amax")  # scatter_reduce_ with reduce="amax" to get right alpha
-    colors = new_colors
+    # better solution is to divide alphas by object reps in each pixel
+    # even better would be to select max alpha for each object (DONE below, implemented as select_max_value_for_each_index)
 
-    
-    
-    # alpha = colors[..., 3]#, None]
-    # alpha = alpha.permute(0, 3, 1, 2).flatten(0, 1)
-    # alpha = alpha
-    # alpha = closing(alpha[:, None, ...], kernel=closing_kernel)[:, 0, ...]
-    # alpha = gaussian_blur2d(alpha[:, None, ...], (7, 7), (1, 1))[:, 0, ...]
-    # alpha = alpha.unflatten(0, (N, K)).permute(0, 2, 3, 1)
-    # alpha = alpha[..., None]
-    
-    # "shading" starts here:
-    
+    # Each object to separate "layer":
+    # new_colors = torch.zeros_like(colors)
+    # new_colors.scatter_reduce_(-2, torch.broadcast_to(index, colors.shape), colors, reduce="amax")  # scatter_reduce_ with reduce="amax" to get right alpha
+    # colors = new_colors
+
     alpha = colors[..., 3, None]
-    
-    
+    alpha = select_max_value_for_each_index(index[..., 0], alpha[..., 0])[..., None]
+
+    # "shading" starts here:
+
     rgb = colors[..., :3]
     alpha_sum = alpha.sum(dim=-2)
 
     # alpha_sum might be 0
-    rgb_blended = torch.nan_to_num((rgb * alpha).sum(dim=-2) / alpha_sum, 0.0, 0.0, 0.0)
+    rgb_blended = torch.nan_to_num((rgb * alpha).sum(dim=-2) / alpha_sum, 0.0, 1.0, 0.0)
     rgba = torch.cat((rgb_blended, alpha.sum(dim=-2)), dim=-1)
 
     return rgba.clamp(0.0, 1.0)
@@ -162,7 +186,8 @@ class PyTorch3DRenderer2D(Renderer2D):
         background_color: TensorType[4, torch.float32] = torch.zeros(4),
         device: torch.device = torch.device("cpu"),
         with_alpha: bool = True,
-        v_count: int = 64,
+        v_count: int = 48,
+        faces_per_pixel: int = 32,
     ):
         super().__init__(raster_size)
 
@@ -197,7 +222,7 @@ class PyTorch3DRenderer2D(Renderer2D):
         raster_settings = RasterizationSettings(
             image_size=raster_size,
             blur_radius=np.log(1.0 / 1e-4 - 1.0) * sigma,
-            faces_per_pixel=20,
+            faces_per_pixel=faces_per_pixel,  # IMPORTANT: faces_per_pixel should be set considering max_object_count, raster size, and object size
         )
         R, T = look_at_view_transform(at=((0, 0, 0),), up=((0, 1, 0),))
         camera = FoVOrthographicCameras(device=device, R=R, T=T, min_x=-1, max_x=0, min_y=-1, max_y=0)
@@ -206,12 +231,10 @@ class PyTorch3DRenderer2D(Renderer2D):
             shader=SimpleFlatRgbaShader(
                 device=device,
                 cameras=camera,
-                lights=AmbientLights(device=device), # Not used by our shader
+                lights=AmbientLights(device=device),  # Not used by our shader
                 blend_params=BlendParams(),
             ),
         )
-
-        self.closing_kernel = torch.from_numpy(disk(1, dtype=np.float32)).to(device)
 
     def render(self, scene: Scene, with_alpha: Union[bool, None] = None) -> TensorType[batch_dim, height_dim, width_dim, 4, torch.float32]:
         assert scene.device == self.device, f"Scene ({scene.device}) should be on the same device as {type(self).__name__} ({self.device})"
@@ -226,15 +249,15 @@ class PyTorch3DRenderer2D(Renderer2D):
         faces = self.faces_disk.repeat(batch_len, layer_len, object_len, 1, 1)
         self.faces_disk_offset = torch.arange(object_len, dtype=torch.float32, device=self.device)[None, None, :, None, None] * (self.v_count)
 
-        faces = faces + self.faces_disk_offset # this can be cached
+        faces = faces + self.faces_disk_offset  # this can be cached
 
         colors = torch.cat((scene.layer.object.appearance.color[..., None, :], scene.layer.object.appearance.confidence[..., None, :]), dim=-1)
-        
+
         if self.with_alpha if with_alpha == None else with_alpha:
             pass
         else:
             colors[..., 3] = 1
-            
+
         # Repeat color for each point, shape: batch, layer, object, vertex, channel
         colors = colors.repeat(1, 1, 1, self.v_count, 1)
 
@@ -256,7 +279,7 @@ class PyTorch3DRenderer2D(Renderer2D):
         # in those structures)
         # meshes = pytorch3d.structures.join_meshes_as_scene([meshes1, meshes2])
 
-        # TODO: Implement pytorch3d "shader" to render alpha in single pass
+        # TODO: Implement pytorch3d "shader" to render alpha in single pass (DONE)
         # https://github.com/facebookresearch/pytorch3d/issues/737
 
         # draw colors
@@ -268,5 +291,5 @@ class PyTorch3DRenderer2D(Renderer2D):
         final_images = self.background.clone()
         for layer_idx in range(layer_len):
             # TODO: follow Scene's blending property
-            final_images = self.alpha_compositing(color_rendered[:, layer_idx], final_images) 
+            final_images = self.alpha_compositing(color_rendered[:, layer_idx], final_images)
         return final_images
