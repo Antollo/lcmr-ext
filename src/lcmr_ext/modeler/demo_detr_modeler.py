@@ -29,7 +29,7 @@ class DemoDETRModeler(Modeler):
         num_decoder_layers: int = 4,
         num_queries: int = 7,
         encoder_feature_dim: int = 2048,
-        input_size: (int, int) = (4, 4)
+        input_size: tuple[int, int] = (4, 4)
     ):
         super().__init__()
 

@@ -1,2 +1,3 @@
 from .demo_detr_modeler import DemoDETRModeler
 from .detr_modeler import DETRModeler
+from .conditional_detr_modeler import ConditionalDETRModeler
