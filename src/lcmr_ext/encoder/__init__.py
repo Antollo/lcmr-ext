@@ -1,2 +1,3 @@
 from .resnet50_encoder import ResNet50Encoder
+from .convnext_base_encoder import ConvNextBaseEncoder
 from .pretrained_encoder import PretrainedEncoder
