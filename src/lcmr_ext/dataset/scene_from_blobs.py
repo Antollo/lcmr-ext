@@ -12,7 +12,7 @@ from kornia.geometry.transform import resize
 
 from lcmr.grammar import Scene, Layer
 from lcmr.renderer import OpenGLRenderer2D
-from lcmr.utils.guards import typechecked, batch_dim, height_dim, width_dim
+from lcmr.utils.guards import typechecked, ImageBHWC3, height_dim, width_dim
 
 
 @cache
@@ -38,7 +38,7 @@ class SceneFromBlobs:
         self.device = device
         self.renderer = OpenGLRenderer2D(raster_size, gamma_rgb=1.2, gamma_confidence=2.5, background_color=background_color, device=device)
 
-    def predict(self, imgs: TensorType[batch_dim, height_dim, width_dim, 3, torch.float32], num_blobs: int = 7):
+    def predict(self, imgs: ImageBHWC3, num_blobs: int = 7):
         # param_groups = [self.single_img(img, num_blobs=num_blobs) for img in imgs]
         # param_groups = [torch.cat(p, dim=0) for p in zip(*param_groups)]
         # return param_groups

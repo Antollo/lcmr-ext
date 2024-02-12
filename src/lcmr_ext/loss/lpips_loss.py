@@ -2,7 +2,7 @@ import torch
 from torchtyping import TensorType
 import lpips
 
-from lcmr.utils.guards import batch_dim, height_dim, width_dim, typechecked
+from lcmr.utils.guards import typechecked, ImageBHWC3
 from lcmr_ext.loss.image_level_loss import ImageLevelLoss
 
 
@@ -14,8 +14,8 @@ class LPIPSLoss(ImageLevelLoss):
 
     def forward(
         self,
-        y_true: TensorType[batch_dim, height_dim, width_dim, 3, torch.float32],
-        y_pred: TensorType[batch_dim, height_dim, width_dim, 3, torch.float32],
+        y_true: ImageBHWC3,
+        y_pred: ImageBHWC3,
     ):
 
         return self.model(y_true.permute(0, 3, 1, 2), y_pred.permute(0, 3, 1, 2), normalize=True).mean()

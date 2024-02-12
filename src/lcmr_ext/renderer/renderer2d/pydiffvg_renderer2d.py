@@ -4,7 +4,7 @@ import pydiffvg
 
 from lcmr.grammar import Scene, Layer
 from lcmr.renderer.renderer2d import Renderer2D
-from lcmr.utils.guards import typechecked, batch_dim, height_dim, width_dim
+from lcmr.utils.guards import typechecked, ImageBHWC4, ImageHWC4
 
 
 # TODO: support shape, support composition, support layer.scale
@@ -31,7 +31,7 @@ class PyDiffVgRenderer2D(Renderer2D):
 
         self.last_length = -1
 
-    def render(self, scene: Scene) -> TensorType[batch_dim, height_dim, width_dim, 4, torch.float32]:
+    def render(self, scene: Scene) -> ImageBHWC4:
         assert scene.device == self.device, f"Scene ({scene.device}) should be on the same device as PyDiffVgRenderer2D ({self.device})"
 
         imgs = []
@@ -47,7 +47,7 @@ class PyDiffVgRenderer2D(Renderer2D):
 
         return torch.vstack(imgs)
 
-    def render_layer(self, layer: Layer) -> TensorType[height_dim, width_dim, 4, torch.float32]:
+    def render_layer(self, layer: Layer) -> ImageHWC4:
         shape_to_canvas_arr = self.scale_matrix @ layer.object.transformation.matrix
         fill_color_arr = torch.cat((layer.object.appearance.color, layer.object.appearance.confidence), dim=-1)
 

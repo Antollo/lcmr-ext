@@ -5,7 +5,7 @@ from torchvision.transforms.transforms import Normalize, Resize, Compose
 from typing import Optional
 
 from lcmr.encoder import Encoder
-from lcmr.utils.guards import typechecked, batch_dim, height_dim, width_dim, reduced_height_dim, reduced_width_dim, channel_dim
+from lcmr.utils.guards import typechecked, ImageBHWC3, batch_dim, reduced_height_dim, reduced_width_dim, channel_dim
 
 
 @typechecked
@@ -25,7 +25,7 @@ class PretrainedEncoder(Encoder):
         self.transform = Compose(transforms)
 
     def forward(
-        self, x: TensorType[batch_dim, height_dim, width_dim, 3, torch.float32]
+        self, x: ImageBHWC3
     ) -> TensorType[batch_dim, channel_dim, reduced_height_dim, reduced_width_dim, torch.float32]:
         # BHWC to BCHW
         x = x.permute(0, 3, 1, 2)

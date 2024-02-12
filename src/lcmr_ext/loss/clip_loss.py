@@ -5,7 +5,7 @@ import open_clip
 from typing import Optional
 from collections import OrderedDict
 
-from lcmr.utils.guards import batch_dim, height_dim, width_dim, typechecked
+from lcmr.utils.guards import typechecked, ImageBHWC3
 from lcmr_ext.loss.image_level_loss import ImageLevelLoss
 
 
@@ -41,7 +41,7 @@ class CLIPLoss(ImageLevelLoss):
                 self.feature_maps[name] = output
         return hook
         
-    def encode_image(self, image: TensorType[batch_dim, height_dim, width_dim, 3, torch.float32]):
+    def encode_image(self, image: ImageBHWC3):
         fc = self.model.encode_image(self.transform(image.permute(0, 3, 1, 2)))
         feature_maps = self.feature_maps
         return fc, feature_maps
@@ -49,8 +49,8 @@ class CLIPLoss(ImageLevelLoss):
 
     def forward(
         self,
-        y_true: TensorType[batch_dim, height_dim, width_dim, 3, torch.float32],
-        y_pred: TensorType[batch_dim, height_dim, width_dim, 3, torch.float32],
+        y_true: ImageBHWC3,
+        y_pred: ImageBHWC3,
     ):
         fc_true, fm_true = self.encode_image(y_true)
         fc_pred, fm_pred = self.encode_image(y_pred)

@@ -3,7 +3,7 @@ from torchtyping import TensorType
 from torchvision.models import convnext_base, ConvNeXt_Base_Weights
 from typing import Optional
 
-from lcmr.utils.guards import typechecked, batch_dim, height_dim, width_dim, reduced_height_dim, reduced_width_dim
+from lcmr.utils.guards import typechecked, ImageBHWC3, batch_dim, reduced_height_dim, reduced_width_dim
 
 from .pretrained_encoder import PretrainedEncoder
 
@@ -18,6 +18,6 @@ class ConvNextBEncoder(PretrainedEncoder):
         super().__init__(model, input_size=input_size)
 
     def forward(
-        self, x: TensorType[batch_dim, height_dim, width_dim, 3, torch.float32]
+        self, x: ImageBHWC3
     ) -> TensorType[batch_dim, 1024, reduced_height_dim, reduced_width_dim, torch.float32]:
         return super().forward(x)

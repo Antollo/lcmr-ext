@@ -20,7 +20,7 @@ import warnings
 
 from lcmr.grammar import Scene
 from lcmr.renderer.renderer2d import Renderer2D
-from lcmr.utils.guards import typechecked, batch_dim, height_dim, width_dim
+from lcmr.utils.guards import typechecked, ImageBHWC4
 
 
 def simple_flat_shading_rgba(meshes, fragments, lights, cameras, materials) -> torch.Tensor:
@@ -236,7 +236,7 @@ class PyTorch3DRenderer2D(Renderer2D):
             ),
         )
 
-    def render(self, scene: Scene, with_alpha: Union[bool, None] = None) -> TensorType[batch_dim, height_dim, width_dim, 4, torch.float32]:
+    def render(self, scene: Scene, with_alpha: Union[bool, None] = None) -> ImageBHWC4:
         assert scene.device == self.device, f"Scene ({scene.device}) should be on the same device as {type(self).__name__} ({self.device})"
 
         batch_len, layer_len, object_len = scene.layer.object.shape

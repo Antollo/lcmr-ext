@@ -1,11 +1,10 @@
 import torch
 from typing import Sequence
-from torchtyping import TensorType
 from tqdm import tqdm
 
 from lcmr.grammar import Scene
 from lcmr.renderer.renderer2d import Renderer2D
-from lcmr.utils.guards import typechecked, batch_dim, height_dim, width_dim
+from lcmr.utils.guards import typechecked, ImageBHWC3
 from lcmr.utils.presentation import display_img
 
 # TODO allow any loss
@@ -14,7 +13,7 @@ from lcmr.utils.presentation import display_img
 @typechecked
 def optimize_params(
     scene: Scene,
-    target: TensorType[batch_dim, height_dim, width_dim, 3, torch.float32],
+    target: ImageBHWC3,
     renderer: Renderer2D,
     params: Sequence[torch.Tensor],
     epochs: int = 241,
