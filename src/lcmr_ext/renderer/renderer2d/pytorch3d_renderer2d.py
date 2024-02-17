@@ -16,7 +16,6 @@ from pytorch3d.renderer import (
 )
 from pytorch3d.renderer.mesh.shader import ShaderBase, Fragments
 from pytorch3d.ops import interpolate_face_attributes
-import warnings
 
 from lcmr.grammar import Scene
 from lcmr.renderer.renderer2d import Renderer2D
@@ -52,37 +51,22 @@ def simple_flat_shading_rgba(meshes, fragments, lights, cameras, materials) -> t
     return colors
 
 
+# TODO: remove the for loop, process "in batch"
 def select_max_value_for_each_index(indices, values):
-    # loop, this is bad
     for i in range(int(torch.max(indices).item()) + 1):
         mask = indices == i
         max_v, max_i = (values * mask).max(dim=-1, keepdim=True)
+        max_v *= mask.any(dim=-1, keepdim=True)
         values[mask] = 0
-        values = values.scatter_add(3, index=max_i, src=max_v)
+        values.scatter_add_(3, index=max_i, src=max_v)
     return values
 
-# If scatter_add_ (inplace) or something similar had atomic GPU implementation 
-# we would be able to parallelize the function above using torch.compile or tracing.
 
-# torch.compile mess up the function
-# select_max_value_for_each_index = torch.compile(select_max_value_for_each_index)
-
-# batch_size = 128
-# raster_size = (128, 128)
-# size = (batch_size, *raster_size, faces_per_pixel)
-# select_max_value_for_each_index = torch.jit.trace(
-#     select_max_value_for_each_index, (torch.randint(0, faces_per_pixel, size=size).cuda(), torch.rand(size=size).cuda())
-# )
-
-# select_max_value_for_each_index_impl = select_max_value_for_each_index
-# select_max_value_for_each_index_dict = {}
-# def select_max_value_for_each_index(indices, values):
-#    key = int(torch.max(indices).item())
-#    if key not in select_max_value_for_each_index_dict:
-#        with warnings.catch_warnings():
-#            warnings.simplefilter("ignore")
-#            select_max_value_for_each_index_dict[key] = torch.jit.trace(select_max_value_for_each_index_impl, (indices, values))
-#    return select_max_value_for_each_index_dict[key](indices, values)
+# torch.compile seems to work fine
+try:
+    select_max_value_for_each_index = torch.compile(select_max_value_for_each_index)
+except:
+    print("Failed to use torch.compile")
 
 
 def simple_flat_rgba_blend(colors: torch.Tensor, fragments, blend_params: BlendParams) -> torch.Tensor:
@@ -141,7 +125,7 @@ def simple_flat_rgba_blend(colors: torch.Tensor, fragments, blend_params: BlendP
     # colors = new_colors
 
     alpha = colors[..., 3, None]
-    alpha = select_max_value_for_each_index(index[..., 0], alpha[..., 0])[..., None]
+    alpha = select_max_value_for_each_index(index[..., 0], alpha[..., 0].contiguous())[..., None]
 
     # "shading" starts here:
 

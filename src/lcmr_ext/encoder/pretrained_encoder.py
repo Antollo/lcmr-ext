@@ -20,7 +20,7 @@ class PretrainedEncoder(Encoder):
 
         transforms = [Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])]
         if input_size != None:
-            transforms.append(Resize(size=input_size))
+            transforms.append(Resize(size=input_size, antialias=True))
 
         self.transform = Compose(transforms)
 

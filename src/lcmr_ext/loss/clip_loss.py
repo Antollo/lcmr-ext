@@ -1,6 +1,5 @@
 import torch
 from torchvision.transforms.transforms import Resize, Compose
-from torchtyping import TensorType
 import open_clip
 from typing import Optional
 from collections import OrderedDict
@@ -24,7 +23,7 @@ class CLIPLoss(ImageLevelLoss):
 
         transforms = [preprocess.transforms[-1]]  # Normalize
         if input_size != None:
-            transforms.append(Resize(size=input_size))
+            transforms.append(Resize(size=input_size, antialias=True))
 
         self.transform = Compose(transforms)
 
