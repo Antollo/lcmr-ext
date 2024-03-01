@@ -17,7 +17,7 @@ def optimize_params(
     renderer: Renderer2D,
     params: Sequence[torch.Tensor],
     epochs: int = 241,
-    lr: int = 0.005,
+    lr: float = 0.005,
     show_progress: bool = False,
     show_interval: int = 20,
 ):

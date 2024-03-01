@@ -20,6 +20,7 @@ from pytorch3d.ops import interpolate_face_attributes
 from lcmr.grammar import Scene
 from lcmr.renderer.renderer2d import Renderer2D
 from lcmr.utils.guards import typechecked, ImageBHWC4
+from .pytorch3d_shape_renderer2d_internals import Pytorch3DDiskBuilder, Pytorch3DFourierBuilder
 
 
 def simple_flat_shading_rgba(meshes, fragments, lights, cameras, materials) -> torch.Tensor:
@@ -169,37 +170,13 @@ class PyTorch3DRenderer2D(Renderer2D):
         raster_size: tuple[int, int],
         background_color: TensorType[4, torch.float32] = torch.zeros(4),
         device: torch.device = torch.device("cpu"),
-        with_alpha: bool = True,
-        v_count: int = 48,
+        n_verts: int = 48,
         faces_per_pixel: int = 32,
     ):
         super().__init__(raster_size)
 
         self.device = device
-        self.v_count = v_count
-        self.with_alpha = with_alpha  # TODO: to be replaced with Scene's blending property
         self.background = background_color[None, None, ...].to(device).repeat(*self.raster_size, 1)[None, ...]
-
-        h, w = raster_size
-        self.translation = torch.tensor([-h / w if w > h else 0, w / h if h > w else 0, 0], device=device)
-        self.scale = torch.tensor([w / h if w > h else 1, -h / w if h > w else -1, 1], device=device)
-
-        # prepare disk primitive
-        radius = 1
-        angles = torch.linspace(0, 2 * np.pi, v_count)
-
-        x = radius * (torch.cos(angles))[..., None]
-        y = radius * (torch.sin(angles))[..., None]
-        z = torch.ones(v_count)[..., None]
-
-        # shape: batch, layer, object, ...
-        self.verts_disk = torch.cat((x, y, z), dim=-1)[None, None, None, ...].to(device)
-
-        # make circle from triangles with points only on edge of the circle
-        # (triangles looks like sharp teeth on cartoon character drawing)
-        self.faces_disk = torch.tensor(
-            [[i, i + 1, v_count - i - 1] for i in range(v_count // 2)] + [[v_count - i - 1, v_count - i - 2, i + 1] for i in range(v_count // 2)], device=device
-        )[None, None, None, ...]
 
         # https://pytorch3d.org/tutorials/fit_textured_mesh
         sigma = 1e-4
@@ -219,55 +196,27 @@ class PyTorch3DRenderer2D(Renderer2D):
                 blend_params=BlendParams(),
             ),
         )
+        
+        self.builders = [Pytorch3DDiskBuilder(raster_size, n_verts, device), Pytorch3DFourierBuilder(raster_size, n_verts, device)]
 
-    def render(self, scene: Scene, with_alpha: Union[bool, None] = None) -> ImageBHWC4:
+    def render(self, scene: Scene) -> ImageBHWC4:
         assert scene.device == self.device, f"Scene ({scene.device}) should be on the same device as {type(self).__name__} ({self.device})"
-
-        batch_len, layer_len, object_len = scene.layer.object.shape
-
-        verts = self.verts_disk @ torch.transpose(scene.layer.object.transformation.matrix, -1, -2)
-
-        # assing consecutive "z"s for each object (would fix z-fighting when using traditional shaders)
-        verts[:, :, :, :, 2, None] = torch.arange(-object_len, 0, dtype=torch.float32, device=self.device)[None, None, :, None, None]
-
-        faces = self.faces_disk.repeat(batch_len, layer_len, object_len, 1, 1)
-        self.faces_disk_offset = torch.arange(object_len, dtype=torch.float32, device=self.device)[None, None, :, None, None] * (self.v_count)
-
-        faces = faces + self.faces_disk_offset  # this can be cached
-
-        colors = torch.cat((scene.layer.object.appearance.color[..., None, :], scene.layer.object.appearance.confidence[..., None, :]), dim=-1)
-
-        if self.with_alpha if with_alpha == None else with_alpha:
-            pass
-        else:
-            colors[..., 3] = 1
-
-        # Repeat color for each point, shape: batch, layer, object, vertex, channel
-        colors = colors.repeat(1, 1, 1, self.v_count, 1)
-
-        # flatten objects in layers, flatten layers and batch
-        verts = verts.flatten(2, 3).flatten(0, 1)
-        faces = faces.flatten(2, 3).flatten(0, 1)
-        colors = colors.flatten(2, 3).flatten(0, 1)
-
-        verts *= self.scale
-        verts += self.translation
-
-        textures = TexturesVertex(colors)
-        # (?) somehow all vertices for each layer ends up as single "mesh" in pytorch3d's shaders
-        # not a problem for now but might cause some troubles in future
-        meshes = Meshes(verts=verts, faces=faces, textures=textures)
+        
+        batch_len, layer_len, _ = scene.layer.object.shape
+        
+        meshes = [builder.build(scene.layer.object) for builder in self.builders]
+        meshes = [mesh for mesh in meshes if mesh is not None]
+        assert len(meshes) == 1, "Only one object shape type at time allowed" #TODO
+        meshes = meshes[0]
 
         # This might be useful to concat more than one Meshes structures without manually
-        # setting indices for each instance (that would be painful if `v_count` is different
-        # in those structures)
-        # meshes = pytorch3d.structures.join_meshes_as_scene([meshes1, meshes2])
-
-        # TODO: Implement pytorch3d "shader" to render alpha in single pass (DONE)
-        # https://github.com/facebookresearch/pytorch3d/issues/737
+        # setting indices for each instance
+        #import pytorch3d.structures
+        #meshes = pytorch3d.structures.join_meshes_as_batch(meshes)
 
         # draw colors
         color_rendered = self.renderer(meshes)
+        
 
         # unflatten layers and batch
         color_rendered = color_rendered.unflatten(0, (batch_len, layer_len))

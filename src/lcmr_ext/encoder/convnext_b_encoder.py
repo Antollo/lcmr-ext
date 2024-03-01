@@ -5,7 +5,7 @@ from typing import Optional
 
 from lcmr.utils.guards import typechecked, ImageBHWC3, batch_dim, reduced_height_dim, reduced_width_dim
 
-from .pretrained_encoder import PretrainedEncoder
+from lcmr.encoder.pretrained_encoder import PretrainedEncoder
 
 
 @typechecked
@@ -17,7 +17,5 @@ class ConvNextBEncoder(PretrainedEncoder):
 
         super().__init__(model, input_size=input_size)
 
-    def forward(
-        self, x: ImageBHWC3
-    ) -> TensorType[batch_dim, 1024, reduced_height_dim, reduced_width_dim, torch.float32]:
+    def forward(self, x: ImageBHWC3) -> TensorType[batch_dim, 1024, reduced_height_dim, reduced_width_dim, torch.float32]:
         return super().forward(x)
