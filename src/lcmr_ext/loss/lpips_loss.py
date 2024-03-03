@@ -17,5 +17,4 @@ class LPIPSLoss(ImageLevelLoss):
         y_true: ImageBHWC3,
         y_pred: ImageBHWC3,
     ):
-
         return self.model(y_true.permute(0, 3, 1, 2), y_pred.permute(0, 3, 1, 2), normalize=True).mean()
