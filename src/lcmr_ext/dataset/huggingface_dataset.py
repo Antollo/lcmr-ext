@@ -3,12 +3,17 @@ from torch.utils.data import Dataset
 from datasets import load_dataset, load_from_disk
 from typing import Optional
 import multiprocessing
+import platform
 
 from lcmr_ext.dataset.dataset_options import DatasetOptions
 
 # "fork" start method might result in deadlock
 # https://discuss.huggingface.co/t/dataset-map-stuck-with-torch-set-num-threads-set-to-2-or-larger/37984
-multiprocessing.set_start_method("spawn", force=True)
+if platform.system() == "Linux":
+    try:
+        multiprocessing.set_start_method("spawn")
+    except RuntimeError:
+        pass
 
 
 class HuggingFaceDataset(Dataset):
@@ -16,7 +21,7 @@ class HuggingFaceDataset(Dataset):
         self.options = options
         name = (options.name + ("" if data_dir == None else data_dir)).replace("/", "-").replace("\\", "-").replace("~", "")
         cache_filename = f"{name}-{options.split}-seed-{options.seed}-raster_size-{'-'.join(map(str, options.raster_size))}-background_color-{'-'.join(map(str, options.background_color.tolist()))}"
-        
+
         try:
             self.dataset = load_from_disk(cache_filename)
         except:

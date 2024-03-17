@@ -1,6 +1,5 @@
 import torch
 import numpy as np
-from typing import Union
 from torchtyping import TensorType
 from pytorch3d.structures import Meshes
 from pytorch3d.renderer import (
@@ -23,7 +22,7 @@ from lcmr.utils.guards import typechecked, ImageBHWC4
 from .pytorch3d_shape_renderer2d_internals import Pytorch3DDiskBuilder, Pytorch3DFourierBuilder
 
 
-def simple_flat_shading_rgba(meshes, fragments, lights, cameras, materials) -> torch.Tensor:
+def simple_flat_shading_rgba(meshes: Meshes, fragments: Fragments, lights, cameras, materials) -> torch.Tensor:
     """
     Apply per vertex shading. Don't compute any lighting. Interpolate the vertex shaded
     colors using the barycentric coordinates to get a color per pixel.
@@ -53,9 +52,10 @@ def simple_flat_shading_rgba(meshes, fragments, lights, cameras, materials) -> t
 
 
 # TODO: remove the for loop, process "in batch"
-def select_max_value_for_each_index(indices, values):
-    for i in range(int(torch.max(indices).item()) + 1):
-        mask = indices == i
+def select_max_value_for_each_index(indices: torch.Tensor, values: torch.Tensor):
+    n_objects = int(torch.max(indices).item())
+    for i in range(n_objects):
+        mask = indices == (i + 1)
         max_v, max_i = (values * mask).max(dim=-1, keepdim=True)
         max_v *= mask.any(dim=-1, keepdim=True)
         values[mask] = 0
@@ -70,7 +70,7 @@ except:
     print("Failed to use torch.compile")
 
 
-def simple_flat_rgba_blend(colors: torch.Tensor, fragments, blend_params: BlendParams) -> torch.Tensor:
+def simple_flat_rgba_blend(colors: torch.Tensor, fragments: Fragments, blend_params: BlendParams) -> torch.Tensor:
     """
     Simple weighted sum blending of top K faces to return an RGBA image
       - **RGB** - sum(rgb * alpha) / sum(alpha)
@@ -98,42 +98,16 @@ def simple_flat_rgba_blend(colors: torch.Tensor, fragments, blend_params: BlendP
     colors[..., 3] *= prob_map
 
     # each "layer" (dimension named "K") in colors represents i-th face (triangle) present in this pixel
-    # unfortunately more than one face of the same object may be presents
-
-    # TRICK 1
-
-    # the trick is to z-buffer, each object has its own depth that we can use as index
-    zbuf = fragments.zbuf[..., None]
-    # trick with abs
-    # z=-1 == background, z=2,3,4,... == objects    --->    abs(z)-1 == good indices (0,1,2,...)
-    index = (torch.abs(zbuf) - 1).round().to(torch.int64)
-
-    # TRICK 2
-
-    # if we know number of faces per object then floor(face_idx / faces_per_object) is object index
-    # faces_per_object = 16
-    # pix_to_face = fragments.pix_to_face[..., None]
-    # index = torch.div(pix_to_face, 16, rounding_mode="floor") + 1
-
-    # assign each object to separate "layer"
-    # downside: "layer" number limits how many objects we can have
-    # better solution is to divide alphas by object reps in each pixel
-    # even better would be to select max alpha for each object (DONE below, implemented as select_max_value_for_each_index)
-
-    # Each object to separate "layer":
-    # new_colors = torch.zeros_like(colors)
-    # new_colors.scatter_reduce_(-2, torch.broadcast_to(index, colors.shape), colors, reduce="amax")  # scatter_reduce_ with reduce="amax" to get right alpha
-    # colors = new_colors
-
-    alpha = colors[..., 3, None]
-    alpha = select_max_value_for_each_index(index[..., 0], alpha[..., 0].contiguous())[..., None]
-
-    # "shading" starts here:
+    # unfortunately more than one face of the same object may be present
 
     rgb = colors[..., :3]
+    alpha = colors[..., 3, None]
+    object_idx = colors[..., 4, None].round().to(torch.int32)
+
+    alpha = select_max_value_for_each_index(object_idx[..., 0], alpha[..., 0].contiguous())
+    alpha = alpha[..., None]
     alpha_sum = alpha.sum(dim=-2)
 
-    # alpha_sum might be 0
     rgb_blended = torch.nan_to_num((rgb * alpha).sum(dim=-2) / alpha_sum, 0.0, 1.0, 0.0)
     rgba = torch.cat((rgb_blended, alpha.sum(dim=-2)), dim=-1)
 
@@ -162,7 +136,7 @@ class SimpleFlatRgbaShader(ShaderBase):
         return images
 
 
-# TODO: support shape, support composition, support layer.scale
+# TODO: support composition, support layer.scale
 @typechecked
 class PyTorch3DRenderer2D(Renderer2D):
     def __init__(
@@ -196,27 +170,25 @@ class PyTorch3DRenderer2D(Renderer2D):
                 blend_params=BlendParams(),
             ),
         )
-        
         self.builders = [Pytorch3DDiskBuilder(raster_size, n_verts, device), Pytorch3DFourierBuilder(raster_size, n_verts, device)]
 
     def render(self, scene: Scene) -> ImageBHWC4:
         assert scene.device == self.device, f"Scene ({scene.device}) should be on the same device as {type(self).__name__} ({self.device})"
-        
+
         batch_len, layer_len, _ = scene.layer.object.shape
-        
+
         meshes = [builder.build(scene.layer.object) for builder in self.builders]
         meshes = [mesh for mesh in meshes if mesh is not None]
-        assert len(meshes) == 1, "Only one object shape type at time allowed" #TODO
+        assert len(meshes) == 1, "Only one object shape type at time allowed"  # TODO
         meshes = meshes[0]
 
         # This might be useful to concat more than one Meshes structures without manually
         # setting indices for each instance
-        #import pytorch3d.structures
-        #meshes = pytorch3d.structures.join_meshes_as_batch(meshes)
+        # import pytorch3d.structures
+        # meshes = pytorch3d.structures.join_meshes_as_batch(meshes)
 
         # draw colors
         color_rendered = self.renderer(meshes)
-        
 
         # unflatten layers and batch
         color_rendered = color_rendered.unflatten(0, (batch_len, layer_len))
