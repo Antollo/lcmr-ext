@@ -45,8 +45,7 @@ def simple_flat_shading_rgba(meshes: Meshes, fragments: Fragments, lights, camer
     faces = meshes.faces_packed()  # (F, 3)
     verts_colors = meshes.textures.verts_features_packed()  # (V, D)
 
-    verts_colors_shaded = verts_colors
-    face_colors = verts_colors_shaded[faces]
+    face_colors = verts_colors[faces]
     colors = interpolate_face_attributes(fragments.pix_to_face, fragments.bary_coords, face_colors)
     return colors
 
@@ -95,13 +94,12 @@ def simple_flat_rgba_blend(colors: torch.Tensor, fragments: Fragments, blend_par
 
     # 0.0005 "enlarge" the triangles by a bit, reduce weird artifact on the edges
     prob_map = torch.sigmoid(-(fragments.dists - 0.0005) / blend_params.sigma)
-    colors[..., 3] *= prob_map
 
     # each "layer" (dimension named "K") in colors represents i-th face (triangle) present in this pixel
     # unfortunately more than one face of the same object may be present
 
     rgb = colors[..., :3]
-    alpha = colors[..., 3, None]
+    alpha = colors[..., 3, None] * prob_map[..., None]
     object_idx = colors[..., 4, None].round().to(torch.int32)
 
     alpha = select_max_value_for_each_index(object_idx[..., 0], alpha[..., 0].contiguous())
@@ -150,7 +148,7 @@ class PyTorch3DRenderer2D(Renderer2D):
         super().__init__(raster_size)
 
         self.device = device
-        self.background = background_color[None, None, ...].to(device).repeat(*self.raster_size, 1)[None, ...]
+        self.background = background_color[None, None, ...].to(device).expand(*self.raster_size, -1)[None, ...]
 
         # https://pytorch3d.org/tutorials/fit_textured_mesh
         sigma = 1e-4

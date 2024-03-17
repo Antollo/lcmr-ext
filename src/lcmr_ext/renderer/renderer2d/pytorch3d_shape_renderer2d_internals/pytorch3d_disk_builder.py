@@ -36,19 +36,19 @@ class Pytorch3DDiskBuilder(Pytorch3DShapeBuilder):
         verts = self.verts_disk @ torch.transpose(objects.transformation.matrix, -1, -2)
 
         # assign confidence as "z" (would fix z-fighting when using traditional shaders))
-        verts[:, :, :, :, 2, None] = objects.appearance.confidence[..., None, :]
-        
-        faces = self.faces_disk.repeat(batch_len, layer_len, object_len, 1, 1)
+        verts[:, :, :, :, 2, None] = objects.appearance.confidence.clamp(0.001, 0.999)[..., None, :]  # should be in range (-inf, 1)
+
+        faces = self.faces_disk.expand(batch_len, layer_len, object_len, -1, -1)
         faces_disk_offset = torch.arange(object_len, dtype=torch.float32, device=self.device)[None, None, :, None, None] * (self.n_verts)
 
         faces = faces + faces_disk_offset
 
         object_idx = torch.arange(start=1, end=object_len + 1, dtype=torch.float32, device=self.device)[None, None, :, None, None]
-        object_idx = object_idx.repeat(batch_len, layer_len, 1, 1, 1)
+        object_idx = object_idx.expand(batch_len, layer_len, -1, -1, -1)
         colors = torch.cat((objects.appearance.color[..., None, :], objects.appearance.confidence[..., None, :], object_idx), dim=-1)
 
         # repeat color for each vertex (shape: batch, layer, object, vertex, channel)
-        colors = colors.repeat(1, 1, 1, self.n_verts, 1)
+        colors = colors.expand(-1, -1, -1, self.n_verts, -1)
 
         # flatten objects in layers, flatten batch and layers
         verts = verts.flatten(2, 3).flatten(0, 1)
