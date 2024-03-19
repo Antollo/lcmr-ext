@@ -191,8 +191,15 @@ class PyTorch3DRenderer2D(Renderer2D):
         # unflatten layers and batch
         color_rendered = color_rendered.unflatten(0, (batch_len, layer_len))
 
-        final_images = self.background.clone()
+        if scene.backgroundColor != None:
+            background_color = scene.backgroundColor
+            background_color = torch.cat((background_color, torch.ones(*background_color.shape[:-1], 1, device=background_color.device)), dim=-1)
+            background = background_color[:, None, None, :].expand(-1, *self.raster_size, -1)
+        else:
+            background = self.background.clone()
+
         for layer_idx in range(layer_len):
             # TODO: follow Scene's blending property
-            final_images = self.alpha_compositing(color_rendered[:, layer_idx], final_images)
-        return final_images
+            background = self.alpha_compositing(color_rendered[:, layer_idx], background)
+
+        return background

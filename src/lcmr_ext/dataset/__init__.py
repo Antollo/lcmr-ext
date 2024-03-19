@@ -1,0 +1,1 @@
+from lcmr_ext.dataset.multi_dsprites_dataset import MultiDSpritesDataset
