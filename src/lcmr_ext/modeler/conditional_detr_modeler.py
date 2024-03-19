@@ -13,8 +13,10 @@ from lcmr.grammar import Scene
 from lcmr.modeler import Modeler
 from lcmr.utils.guards import typechecked, batch_dim, reduced_height_dim, reduced_width_dim, channel_dim
 
-# Copied drom detr_modeler.py, changed "Detr.*" classes to "ConditionalDetr.*" classes
+# Copied detr_modeler.py, changed "Detr.*" classes to "ConditionalDetr.*" classes
 # TODO: consider merging DETRModeler and ConditionalDETRModeler, add a parameter to select variant
+
+# TODO: add params related to shape and background color
 
 
 @typechecked
@@ -31,13 +33,17 @@ class ConditionalDETRModeler(Modeler):
 
         # prediction heads
         def make_head(output_dim: int):
-            return ConditionalDetrMLPPredictionHead(input_dim=config.d_model, hidden_dim=config.d_model, output_dim=output_dim, num_layers=prediction_head_layers)
+            return ConditionalDetrMLPPredictionHead(
+                input_dim=config.d_model, hidden_dim=config.d_model, output_dim=output_dim, num_layers=prediction_head_layers
+            )
 
         self.to_translation = make_head(output_dim=2)
         self.to_scale = make_head(output_dim=2)
         self.to_color = make_head(output_dim=3)
         self.to_confidence = make_head(output_dim=1)
         self.to_angle = make_head(output_dim=2)
+        self.to_fourier_shape = make_head(output_dim=32)
+        self.to_background_color = make_head(output_dim=3)
 
     def forward(self, x: TensorType[batch_dim, reduced_height_dim, reduced_width_dim, channel_dim, torch.float32]) -> Scene:
         device = next(self.parameters()).device
@@ -90,10 +96,22 @@ class ConditionalDETRModeler(Modeler):
         rotation_vec = nn.functional.normalize(rotation_vec, dim=-1)
         angle = torch.atan2(rotation_vec[..., 0, None], rotation_vec[..., 1, None]).unsqueeze(1)
 
+        fourier_shape = self.to_fourier_shape(hidden_state).unsqueeze(1).unflatten(-1, (8, 4))
+        fourier_shape[..., 0, 0] = 1.0
+        fourier_shape[..., 0, 3] = -torch.sigmoid(fourier_shape[..., 0, 3])
+        fourier_shape[..., 0, 1:3] = 0.0
+        fourier_shape[..., 1:, :] = torch.tanh(fourier_shape[..., 1:, :])
+
+        background_color = torch.sigmoid(self.to_background_color(hidden_state.mean(dim=-2)))
+
         return Scene.from_tensors_sparse(
             translation=translation,
             scale=scale,
             color=color,
             confidence=confidence,
             angle=angle,
-        ).to(device)
+            fourierCoefficients=fourier_shape,
+            objectShape=torch.ones(confidence.shape, dtype=torch.uint8) * 2,
+            backgroundColor=background_color,
+            device=device,
+        )
