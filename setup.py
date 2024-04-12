@@ -11,6 +11,7 @@ setup(
         "multiprocess",
         "more-itertools",
         "imageio",
+        "omegaconf",
         #'opencv-python'
     ],
 )

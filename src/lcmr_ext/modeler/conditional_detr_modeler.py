@@ -10,8 +10,11 @@ from transformers.models.conditional_detr.modeling_conditional_detr import (
 from transformers.models.conditional_detr import ConditionalDetrConfig
 
 from lcmr.grammar import Scene
+from lcmr.grammar.shapes import Shape2D
 from lcmr.modeler import Modeler
 from lcmr.utils.guards import typechecked, batch_dim, reduced_height_dim, reduced_width_dim, channel_dim
+from lcmr_ext.modeler.efd_module import EfdModule
+from lcmr_ext.modeler.modeler_config import ModelerConfig
 
 # Copied detr_modeler.py, changed "Detr.*" classes to "ConditionalDetr.*" classes
 # TODO: consider merging DETRModeler and ConditionalDETRModeler, add a parameter to select variant
@@ -21,29 +24,41 @@ from lcmr.utils.guards import typechecked, batch_dim, reduced_height_dim, reduce
 
 @typechecked
 class ConditionalDETRModeler(Modeler):
-    def __init__(self, config: ConditionalDetrConfig = ConditionalDetrConfig(), encoder_feature_dim: int = 2048, prediction_head_layers: int = 3):
+    def __init__(self, config: ModelerConfig, detr_config: ConditionalDetrConfig = ConditionalDetrConfig()):
         super().__init__()
 
-        self.input_projection = nn.Conv2d(encoder_feature_dim, config.d_model, kernel_size=1)
-        self.query_position_embedding = nn.Embedding(config.num_queries, config.d_model)
-        self.position_encoding = build_position_encoding(config)
+        self.use_single_scale = config.use_single_scale
+        self.num_queries = detr_config.num_queries
 
-        self.encoder = ConditionalDetrEncoder(config)
-        self.decoder = ConditionalDetrDecoder(config)
+        self.input_projection = nn.Conv2d(config.encoder_feature_dim, detr_config.d_model, kernel_size=1)
+        self.query_position_embedding = nn.Embedding(detr_config.num_queries, detr_config.d_model)
+        self.position_encoding = build_position_encoding(detr_config)
+
+        self.encoder = ConditionalDetrEncoder(detr_config)
+        self.decoder = ConditionalDetrDecoder(detr_config)
 
         # prediction heads
         def make_head(output_dim: int):
             return ConditionalDetrMLPPredictionHead(
-                input_dim=config.d_model, hidden_dim=config.d_model, output_dim=output_dim, num_layers=prediction_head_layers
+                input_dim=detr_config.d_model, hidden_dim=detr_config.d_model, output_dim=output_dim, num_layers=config.prediction_head_layers
             )
 
         self.to_translation = make_head(output_dim=2)
-        self.to_scale = make_head(output_dim=2)
+        self.to_scale = make_head(output_dim=(1 if self.use_single_scale else 2))
         self.to_color = make_head(output_dim=3)
-        self.to_confidence = make_head(output_dim=1)
+        if config.use_confidence:
+            self.to_confidence = make_head(output_dim=1)
+        else:
+            self.to_confidence = None
         self.to_angle = make_head(output_dim=2)
-        self.to_fourier_shape = make_head(output_dim=32)
         self.to_background_color = make_head(output_dim=3)
+
+        efd_module_config = config.efd_module_config
+        if efd_module_config != None:
+            efd_module_config.input_dim = detr_config.d_model
+            efd_module_config.hidden_dim = detr_config.d_model
+            efd_module_config.num_layers = config.prediction_head_layers
+            self.to_efd = EfdModule(efd_module_config)
 
     def forward(self, x: TensorType[batch_dim, reduced_height_dim, reduced_width_dim, channel_dim, torch.float32]) -> Scene:
         device = next(self.parameters()).device
@@ -63,8 +78,8 @@ class ConditionalDETRModeler(Modeler):
         flattened_mask = pixel_mask.flatten(1)
 
         # Fourth, sent flattened_features + flattened_mask + position embeddings through encoder
-        # flattened_features is a Tensor of shape (batch_size, heigth*width, hidden_size)
-        # flattened_mask is a Tensor of shape (batch_size, heigth*width)
+        # flattened_features is a Tensor of shape (batch_size, height*width, hidden_size)
+        # flattened_mask is a Tensor of shape (batch_size, height*width)
 
         encoder_outputs = self.encoder(
             inputs_embeds=flattened_features,
@@ -89,20 +104,27 @@ class ConditionalDETRModeler(Modeler):
 
         # Finally project transformer outputs to scene
         translation = torch.sigmoid(self.to_translation(hidden_state)).unsqueeze(1)
+
         scale = torch.sigmoid(self.to_scale(hidden_state)).unsqueeze(1)
+        if self.use_single_scale:
+            scale = scale.expand(-1, -1, -1, 2)
+
         color = torch.sigmoid(self.to_color(hidden_state)).unsqueeze(1)
-        confidence = torch.sigmoid(self.to_confidence(hidden_state)).unsqueeze(1)
+
+        if self.to_confidence != None:
+            confidence = torch.sigmoid(self.to_confidence(hidden_state)).unsqueeze(1)
+        else:
+            confidence = torch.ones((batch_size, 1, self.num_queries, 1), dtype=torch.float32, device=device)
+
         rotation_vec = torch.tanh(self.to_angle(hidden_state))
         rotation_vec = nn.functional.normalize(rotation_vec, dim=-1)
         angle = torch.atan2(rotation_vec[..., 0, None], rotation_vec[..., 1, None]).unsqueeze(1)
 
-        fourier_shape = self.to_fourier_shape(hidden_state).unsqueeze(1).unflatten(-1, (8, 4))
-        fourier_shape[..., 0, 0] = 1.0
-        fourier_shape[..., 0, 3] = -torch.sigmoid(fourier_shape[..., 0, 3])
-        fourier_shape[..., 0, 1:3] = 0.0
-        fourier_shape[..., 1:, :] = torch.tanh(fourier_shape[..., 1:, :])
+        efd = self.to_efd(hidden_state).unsqueeze(1) if self.to_efd != None else None
 
         background_color = torch.sigmoid(self.to_background_color(hidden_state.mean(dim=-2)))
+
+        objectShape = Shape2D.FOURIER_SHAPE.value if self.to_efd != None else Shape2D.DISK.value
 
         return Scene.from_tensors_sparse(
             translation=translation,
@@ -110,8 +132,8 @@ class ConditionalDETRModeler(Modeler):
             color=color,
             confidence=confidence,
             angle=angle,
-            fourierCoefficients=fourier_shape,
-            objectShape=torch.ones(confidence.shape, dtype=torch.uint8) * 2,
+            fourierCoefficients=efd,
+            objectShape=torch.ones((batch_size, 1, self.num_queries, 1), dtype=torch.uint8, device=device) * objectShape,
             backgroundColor=background_color,
             device=device,
         )

@@ -15,10 +15,11 @@ from pytorch3d.renderer import (
 )
 from pytorch3d.renderer.mesh.shader import ShaderBase, Fragments
 from pytorch3d.ops import interpolate_face_attributes
+from typing import Sequence, Union
 
 from lcmr.grammar import Scene
 from lcmr.renderer.renderer2d import Renderer2D
-from lcmr.utils.guards import typechecked, ImageBHWC4
+from lcmr.utils.guards import typechecked, ImageBHWC4, ImageBHWC1
 from .pytorch3d_shape_renderer2d_internals import Pytorch3DDiskBuilder, Pytorch3DFourierBuilder
 
 
@@ -50,7 +51,7 @@ def simple_flat_shading_rgba(meshes: Meshes, fragments: Fragments, lights, camer
     return colors
 
 
-# TODO: remove the for loop, process "in batch"
+# TODO: remove the for loop, process "in batch", tensor of all masks will be required later to count ARI for multiple objects!
 def select_max_value_for_each_index(indices: torch.Tensor, values: torch.Tensor):
     n_objects = int(torch.max(indices).item())
     for i in range(n_objects):
@@ -69,7 +70,7 @@ except:
     print("Failed to use torch.compile")
 
 
-def simple_flat_rgba_blend(colors: torch.Tensor, fragments: Fragments, blend_params: BlendParams) -> torch.Tensor:
+def simple_flat_rgba_blend(colors: torch.Tensor, fragments: Fragments, blend_params: BlendParams, return_alpha: bool) -> Sequence[torch.Tensor]:
     """
     Simple weighted sum blending of top K faces to return an RGBA image
       - **RGB** - sum(rgb * alpha) / sum(alpha)
@@ -102,14 +103,19 @@ def simple_flat_rgba_blend(colors: torch.Tensor, fragments: Fragments, blend_par
     alpha = colors[..., 3, None] * prob_map[..., None]
     object_idx = colors[..., 4, None].round().to(torch.int32)
 
-    alpha = select_max_value_for_each_index(object_idx[..., 0], alpha[..., 0].contiguous())
+    alpha = select_max_value_for_each_index(object_idx[..., 0], alpha[..., 0].contiguous().clamp(0.001, 0.999))
     alpha = alpha[..., None]
     alpha_sum = alpha.sum(dim=-2)
 
     rgb_blended = torch.nan_to_num((rgb * alpha).sum(dim=-2) / alpha_sum, 0.0, 1.0, 0.0)
     rgba = torch.cat((rgb_blended, alpha.sum(dim=-2)), dim=-1)
 
-    return rgba.clamp(0.0, 1.0)
+    rgba = rgba.clamp(0.0, 1.0)
+    if return_alpha:
+        alpha_sum = alpha_sum.clamp(0.0, 1.0)
+        return rgba, alpha_sum
+    else:
+        return (rgba,)
 
 
 class SimpleFlatRgbaShader(ShaderBase):
@@ -118,6 +124,8 @@ class SimpleFlatRgbaShader(ShaderBase):
 
     Based on `SoftGouraudShader`.
     """
+
+    return_alpha: bool = False
 
     def forward(self, fragments: Fragments, meshes: Meshes, **kwargs) -> torch.Tensor:
         cameras = super()._get_cameras(**kwargs)
@@ -130,7 +138,7 @@ class SimpleFlatRgbaShader(ShaderBase):
             cameras=cameras,
             materials=materials,
         )
-        images = simple_flat_rgba_blend(pixel_colors, fragments, self.blend_params)
+        images = simple_flat_rgba_blend(pixel_colors, fragments, self.blend_params, self.return_alpha)
         return images
 
 
@@ -144,6 +152,7 @@ class PyTorch3DRenderer2D(Renderer2D):
         device: torch.device = torch.device("cpu"),
         n_verts: int = 48,
         faces_per_pixel: int = 32,
+        return_alpha: bool = False,
     ):
         super().__init__(raster_size)
 
@@ -168,9 +177,14 @@ class PyTorch3DRenderer2D(Renderer2D):
                 blend_params=BlendParams(),
             ),
         )
+        self.renderer.shader.return_alpha = return_alpha
         self.builders = [Pytorch3DDiskBuilder(raster_size, n_verts, device), Pytorch3DFourierBuilder(raster_size, n_verts, device)]
 
-    def render(self, scene: Scene) -> ImageBHWC4:
+    def render(
+        self,
+        scene: Scene,
+    ) -> Union[ImageBHWC4, tuple[ImageBHWC4, ImageBHWC1]]:
+        # TODO: return a dataclass with 2 fields?
         assert scene.device == self.device, f"Scene ({scene.device}) should be on the same device as {type(self).__name__} ({self.device})"
 
         batch_len, layer_len, _ = scene.layer.object.shape
@@ -186,10 +200,11 @@ class PyTorch3DRenderer2D(Renderer2D):
         # meshes = pytorch3d.structures.join_meshes_as_batch(meshes)
 
         # draw colors
-        color_rendered = self.renderer(meshes)
+        rendered = self.renderer(meshes)
+        rgba = rendered[0]
 
         # unflatten layers and batch
-        color_rendered = color_rendered.unflatten(0, (batch_len, layer_len))
+        rgba = rgba.unflatten(0, (batch_len, layer_len))
 
         if scene.backgroundColor != None:
             background_color = scene.backgroundColor
@@ -200,6 +215,11 @@ class PyTorch3DRenderer2D(Renderer2D):
 
         for layer_idx in range(layer_len):
             # TODO: follow Scene's blending property
-            background = self.alpha_compositing(color_rendered[:, layer_idx], background)
+            background = self.alpha_compositing(rgba[:, layer_idx], background)
 
-        return background
+        rgba = background
+        if self.renderer.shader.return_alpha:
+            alpha = rendered[1].to(self.device)
+            return rgba, alpha
+        else:
+            return rgba

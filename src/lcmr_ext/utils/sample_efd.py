@@ -5,7 +5,7 @@ from imageio.v3 import imread
 from pyefd import elliptic_fourier_descriptors, reconstruct_contour, normalize_efd
 
 
-order = 32
+order = 64
 
 
 heart_image = imread("https://upload.wikimedia.org/wikipedia/commons/thumb/f/f1/Heart_coraz%C3%B3n.svg/1200px-Heart_coraz%C3%B3n.svg.png")[..., 0]
