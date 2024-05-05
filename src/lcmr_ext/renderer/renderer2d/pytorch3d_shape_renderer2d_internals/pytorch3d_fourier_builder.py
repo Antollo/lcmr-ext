@@ -1,12 +1,11 @@
 import torch
-import numpy as np
 from pytorch3d.structures import Meshes
 from pytorch3d.renderer import TexturesVertex, TexturesVertex
 
 from lcmr.grammar import Object
 from lcmr.grammar.shapes import Shape2D
 from lcmr.utils.guards import typechecked
-from lcmr.utils.fourier_shape_descriptors import reconstruct_contour, triangularize_contour
+from lcmr.utils.fourier_shape_descriptors import reconstruct_contour, triangulate_contour
 from .pytorch3d_shape_builder import Pytorch3DShapeBuilder
 
 
@@ -35,10 +34,7 @@ class Pytorch3DFourierBuilder(Pytorch3DShapeBuilder):
         # assign confidence as "z" (would fix z-fighting when using traditional shaders)
         verts[:, :, :, 2, None] = objects.appearance.confidence.clamp(0.001, 0.999).flatten(0, 1)[..., None, :]  # should be in range (-inf, 1)
 
-        faces = [triangularize_contour(v.squeeze(0)) for v in verts[..., :2].split(1)]
-        max_len = max([idx.shape[0] for idx in faces])
-        faces = [np.pad(idx, ((0, max_len - idx.shape[0]), (0, 0)), constant_values=-1)[None, ...] for idx in faces]
-        faces = torch.from_numpy(np.concatenate(faces, axis=0)).to(self.device)
+        faces = triangulate_contour(verts[..., :2])
 
         verts = verts.flatten(1, 2)
         verts *= self.scale
