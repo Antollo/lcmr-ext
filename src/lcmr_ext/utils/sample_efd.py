@@ -28,7 +28,24 @@ ellipse_efd[0, 1:3] = 0
 ellipse_efd = normalize_efd(ellipse_efd)
 ellipse_contour = reconstruct_contour(ellipse_efd)
 
+h = np.sqrt(3) / 2
+
+hourglass_efd = elliptic_fourier_descriptors([[0, 0], [0.5, h], [0, 2 * h], [1, 2 * h], [0.5, h], [1, 0], [0, 0]], order=order, normalize=True)
+hourglass_efd[0, 1:3] = 0
+hourglass_contour = reconstruct_contour(hourglass_efd)
+
+triangle_efd = elliptic_fourier_descriptors([[0, 0], [0.5, h], [1, 0], [0, 0]], order=order)
+triangle_efd[0, 1:3] = 0
+triangle_contour = reconstruct_contour(triangle_efd)
+
+L_efd =elliptic_fourier_descriptors([[0, 0], [0, 2], [1, 2], [1, 1], [3, 1], [3, 0], [0, 0]], order=order, normalize=True)
+L_efd[0, 1:3] = 0
+L_contour = reconstruct_contour(L_efd)
+
 
 heart_efd = torch.from_numpy(heart_efd).to(torch.float32)
 square_efd = torch.from_numpy(square_efd).to(torch.float32)
 ellipse_efd = torch.from_numpy(ellipse_efd).to(torch.float32)
+hourglass_efd = torch.from_numpy(hourglass_efd).to(torch.float32)
+triangle_efd = torch.from_numpy(triangle_efd).to(torch.float32)
+L_efd = torch.from_numpy(L_efd).to(torch.float32)

@@ -19,7 +19,7 @@ from typing import Sequence, Union
 
 from lcmr.grammar import Scene
 from lcmr.renderer.renderer2d import Renderer2D
-from lcmr.utils.guards import typechecked, ImageBHWC4, ImageBHWC1
+from lcmr.utils.guards import typechecked, ImageBHWC4, height_dim, width_dim
 from .pytorch3d_shape_renderer2d_internals import Pytorch3DDiskBuilder, Pytorch3DFourierBuilder
 
 
@@ -183,7 +183,7 @@ class PyTorch3DRenderer2D(Renderer2D):
     def render(
         self,
         scene: Scene,
-    ) -> Union[ImageBHWC4, tuple[ImageBHWC4, ImageBHWC1]]:
+    ) -> Union[ImageBHWC4, tuple[ImageBHWC4, TensorType[-1, height_dim, width_dim, 1, torch.float32]]]:
         # TODO: return a dataclass with 2 fields?
         assert scene.device == self.device, f"Scene ({scene.device}) should be on the same device as {type(self).__name__} ({self.device})"
 

@@ -59,12 +59,6 @@ class EfdModule(nn.Module):
             self.mlp = MLP(config, config.num_prototypes)
             generator = FourierDescriptorsGenerator(FourierDescriptorsGeneratorOptions(order=config.order))
             self.prototypes = nn.Parameter(generator.sample(config.num_prototypes))
-            # noisy_circle_efd = torch.randn((config.num_prototypes, config.order, 4), dtype=torch.float32) / 10
-            # noisy_circle_efd[..., 0, 0] = 1.0
-            # noisy_circle_efd[..., 0, 3] = -1.0
-            # noisy_circle_efd[..., 0, 1:3] = 0
-            # noisy_circle_efd = normalize_efd(noisy_circle_efd)
-            # self.prototypes = nn.Parameter(noisy_circle_efd)
             self.prototypes.requires_grad = False
         else:
             assert False
@@ -88,3 +82,21 @@ class EfdModule(nn.Module):
 
         efd = normalize_efd(efd)
         return efd
+
+# TODO: move
+from lcmr.utils.fourier_shape_descriptors import reconstruct_contour, normalize_efd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+sns.set_theme()
+
+def plot_prototypes(prototypes):
+    contours = reconstruct_contour(normalize_efd(prototypes), n_points=256).detach().cpu().numpy()
+    fig, axs = plt.subplots(nrows=1, ncols=len(prototypes))
+    for i, (ax, contour) in enumerate(zip(axs, contours)):
+        ax.title.set_text(f"{i}")
+        ax.plot(contour[..., 0], contour[..., 1])
+        ax.axis("square")
+    fig.set_size_inches(12, 2)
+    fig.tight_layout()
+    plt.show()
