@@ -1,19 +1,18 @@
-import lpips
 from lcmr.grammar.scene_data import SceneData
 from lcmr.utils.guards import typechecked
+from torch.nn.functional import mse_loss
 
 from lcmr_ext.loss.base_loss import BaseLoss
 
 
 @typechecked
-class LPIPSLoss(BaseLoss):
+class ImageMseLoss(BaseLoss):
     def __init__(self):
         super().__init__()
-        self.model = lpips.LPIPS(net="vgg")
 
     def value(
         self,
         y_true: SceneData,
         y_pred: SceneData,
     ):
-        return self.model(y_true.image[..., :3].permute(0, 3, 1, 2), y_pred.image[..., :3].permute(0, 3, 1, 2), normalize=True).mean()
+        return mse_loss(y_true.image[..., :3], y_pred.image[..., :3])

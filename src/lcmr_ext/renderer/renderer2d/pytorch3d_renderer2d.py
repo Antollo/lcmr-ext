@@ -1,26 +1,19 @@
-import torch
-import numpy as np
-from torchtyping import TensorType
-from pytorch3d.structures import Meshes
-from pytorch3d.renderer import (
-    look_at_view_transform,
-    FoVOrthographicCameras,
-    RasterizationSettings,
-    MeshRenderer,
-    MeshRasterizer,
-    TexturesVertex,
-    TexturesVertex,
-    AmbientLights,
-    BlendParams,
-)
-from pytorch3d.renderer.mesh.shader import ShaderBase, Fragments
-from pytorch3d.ops import interpolate_face_attributes
-from typing import Sequence, Union
+from typing import Optional, Sequence
 
+import numpy as np
+import torch
+from lcmr.grammar.scene_data import SceneData
 from lcmr.grammar import Scene
 from lcmr.renderer.renderer2d import Renderer2D
-from lcmr.utils.guards import typechecked, ImageBHWC4, height_dim, width_dim
-from .pytorch3d_shape_renderer2d_internals import Pytorch3DDiskBuilder, Pytorch3DFourierBuilder
+from lcmr.utils.colors import colors
+from lcmr.utils.guards import typechecked
+from pytorch3d.ops import interpolate_face_attributes
+from pytorch3d.renderer import AmbientLights, BlendParams, FoVOrthographicCameras, MeshRasterizer, MeshRenderer, RasterizationSettings, TexturesVertex, look_at_view_transform
+from pytorch3d.renderer.mesh.shader import Fragments, ShaderBase
+from pytorch3d.structures import Meshes
+from torchtyping import TensorType
+
+from .pytorch3d_shape_renderer2d_internals import Pytorch3DDiskBuilder, Pytorch3DEfdBuilder
 
 
 def simple_flat_shading_rgba(meshes: Meshes, fragments: Fragments, lights, cameras, materials) -> torch.Tensor:
@@ -54,13 +47,13 @@ def simple_flat_shading_rgba(meshes: Meshes, fragments: Fragments, lights, camer
 # TODO: remove the for loop, process "in batch", tensor of all masks will be required later to count ARI for multiple objects!
 def select_max_value_for_each_index(indices: torch.Tensor, values: torch.Tensor):
     n_objects = int(torch.max(indices).item())
+    values2 = torch.zeros_like(values)
     for i in range(n_objects):
         mask = indices == (i + 1)
         max_v, max_i = (values * mask).max(dim=-1, keepdim=True)
-        max_v *= mask.any(dim=-1, keepdim=True)
-        values[mask] = 0
-        values.scatter_add_(3, index=max_i, src=max_v)
-    return values
+        max_v = max_v * mask.any(dim=-1, keepdim=True)
+        values2 = values2.scatter_add(3, index=max_i, src=max_v)
+    return values2
 
 
 # torch.compile seems to work fine
@@ -90,30 +83,44 @@ def simple_flat_rgba_blend(colors: torch.Tensor, fragments: Fragments, blend_par
     Returns:
         RGBA pixel_colors: (N, H, W, 4)
     """
+    
+    eps = 1e-7
 
     # N, H, W, K = fragments.pix_to_face.shape
 
     # 0.0005 "enlarge" the triangles by a bit, reduce weird artifact on the edges
     prob_map = torch.sigmoid(-(fragments.dists - 0.0005) / blend_params.sigma)
+    #prob_map = -fragments.dists
+    #prob_map = prob_map - prob_map.amin()
+    #prob_map = prob_map / prob_map.amax()
+    #prob_map = prob_map.clip(0, 1)
 
     # each "layer" (dimension named "K") in colors represents i-th face (triangle) present in this pixel
     # unfortunately more than one face of the same object may be present
 
     rgb = colors[..., :3]
-    alpha = colors[..., 3, None] * prob_map[..., None]
+    #print(torch.unique(colors[..., 3]))
+    #alpha = colors[..., 3, None] * prob_map
     object_idx = colors[..., 4, None].round().to(torch.int32)
 
-    alpha = select_max_value_for_each_index(object_idx[..., 0], alpha[..., 0].contiguous().clamp(0.001, 0.999))
-    alpha = alpha[..., None]
-    alpha_sum = alpha.sum(dim=-2)
+    prob_map = select_max_value_for_each_index(object_idx[..., 0], prob_map.contiguous())[..., None] # .clamp(0.001, 0.999)
+    
 
-    rgb_blended = torch.nan_to_num((rgb * alpha).sum(dim=-2) / alpha_sum, 0.0, 1.0, 0.0)
-    rgba = torch.cat((rgb_blended, alpha.sum(dim=-2)), dim=-1)
+    weight = prob_map * torch.exp((colors[..., 3, None] - 1) * 10)
+    weight_sum = weight.sum(dim=-2).clamp(min=eps)
+    #print(alpha_sum)
 
-    rgba = rgba.clamp(0.0, 1.0)
+    #print(rgb.shape, alpha.shape, (rgb * alpha).shape, alpha_sum.shape)
+    rgb_blended = (rgb * weight).sum(dim=-2) / weight_sum
+    
+    mask = (colors[..., 3, None]) # > 0.5 ).to(torch.float32)
+    
+    alpha = 1.0 - torch.prod((1.0 - prob_map * mask.to(torch.float32)), dim=-2) # * colors[..., 3, None]
+    #print(rgb_blended.shape, alpha.shape)
+    rgba = torch.cat((rgb_blended, alpha), dim=-1)
+
     if return_alpha:
-        alpha_sum = alpha_sum.clamp(0.0, 1.0)
-        return rgba, alpha_sum
+        return rgba, weight_sum
     else:
         return (rgba,)
 
@@ -148,19 +155,21 @@ class PyTorch3DRenderer2D(Renderer2D):
     def __init__(
         self,
         raster_size: tuple[int, int],
-        background_color: TensorType[4, torch.float32] = torch.zeros(4),
+        background_color: Optional[TensorType[4, torch.float32]] = None,
         device: torch.device = torch.device("cpu"),
-        n_verts: int = 48,
+        n_verts: int = 128,
         faces_per_pixel: int = 32,
         return_alpha: bool = False,
+        sigma: float = 1e-4,
     ):
-        super().__init__(raster_size)
+        super().__init__(raster_size=raster_size, device=device)
 
-        self.device = device
+        if background_color == None:
+            background_color = colors.black
+
         self.background = background_color[None, None, ...].to(device).expand(*self.raster_size, -1)[None, ...]
 
         # https://pytorch3d.org/tutorials/fit_textured_mesh
-        sigma = 1e-4
         raster_settings = RasterizationSettings(
             image_size=raster_size,
             blur_radius=np.log(1.0 / 1e-4 - 1.0) * sigma,
@@ -178,12 +187,21 @@ class PyTorch3DRenderer2D(Renderer2D):
             ),
         )
         self.renderer.shader.return_alpha = return_alpha
-        self.builders = [Pytorch3DDiskBuilder(raster_size, n_verts, device), Pytorch3DFourierBuilder(raster_size, n_verts, device)]
+        self.n_verts = n_verts
+
+    @property
+    def n_verts(self):
+        return self._n_verts
+
+    @n_verts.setter
+    def n_verts(self, value):
+        self._n_verts = value
+        self.builders = [Pytorch3DDiskBuilder(self.raster_size, self._n_verts, self.device), Pytorch3DEfdBuilder(self.raster_size, self._n_verts, self.device)]
 
     def render(
         self,
         scene: Scene,
-    ) -> Union[ImageBHWC4, tuple[ImageBHWC4, TensorType[-1, height_dim, width_dim, 1, torch.float32]]]:
+    ) -> SceneData:
         # TODO: return a dataclass with 2 fields?
         assert scene.device == self.device, f"Scene ({scene.device}) should be on the same device as {type(self).__name__} ({self.device})"
 
@@ -218,8 +236,10 @@ class PyTorch3DRenderer2D(Renderer2D):
             background = self.alpha_compositing(rgba[:, layer_idx], background)
 
         rgba = background
-        if self.renderer.shader.return_alpha:
-            alpha = rendered[1].to(self.device)
-            return rgba, alpha
-        else:
-            return rgba
+
+        return SceneData(
+            scene=scene,
+            image=rgba,
+            mask=rendered[1].to(self.device) if self.renderer.shader.return_alpha else None,
+            batch_size=[batch_len],
+        )

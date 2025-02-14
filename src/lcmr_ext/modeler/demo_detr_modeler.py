@@ -76,7 +76,7 @@ class DemoDETRModeler(Modeler):
 
         # propagate through the transformer
         hidden_state = self.transformer(
-            positional_encoding + 0.1 * features.flatten(2).transpose(-1, -2), self.query_position_embeddings.unsqueeze(0).repeat(batch_len, 1, 1)
+            positional_encoding + 0.1 * features.flatten(2).transpose(-1, -2), self.query_position_embedding.unsqueeze(0).repeat(batch_len, 1, 1)
         )
 
         # finally project transformer outputs to class labels and bounding boxes

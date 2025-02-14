@@ -1,21 +1,25 @@
-import torch
-from torch.utils.data import Dataset
-from datasets import load_dataset, load_from_disk
-from typing import Optional
-import multiprocessing
 import platform
+from typing import Optional
 
-from lcmr_ext.dataset.dataset_options import DatasetOptions
+import torch
+from datasets import load_dataset, load_from_disk
+from lcmr.dataset.dataset_options import DatasetOptions
+from lcmr.utils.guards import typechecked
+from torch.utils.data import Dataset
 
 # "fork" start method might result in deadlock
 # https://discuss.huggingface.co/t/dataset-map-stuck-with-torch-set-num-threads-set-to-2-or-larger/37984
 if platform.system() == "Linux":
     try:
-        multiprocessing.set_start_method("spawn")
+        import multiprocessing
+        multiprocessing.set_start_method("spawn", force=True)
+        import multiprocess
+        multiprocess.set_start_method("spawn", force=True)
     except RuntimeError:
-        pass
+        print("Failed to set start method")
 
 
+@typechecked
 class HuggingFaceDataset(Dataset):
     def __init__(self, options: DatasetOptions, data_dir: Optional[str] = None):
         self.options = options
@@ -25,7 +29,7 @@ class HuggingFaceDataset(Dataset):
         try:
             self.dataset = load_from_disk(cache_filename)
         except:
-            dataset = load_dataset(options.name, data_dir=data_dir, num_proc=options.pool_size).with_format("torch")
+            dataset = load_dataset(options.name, data_dir=data_dir, num_proc=options.n_jobs).with_format("torch")
             if ("val" not in dataset and "validation" not in dataset) or "test" not in dataset:
                 # split manually
                 validation_ratio = 0.15
@@ -43,8 +47,8 @@ class HuggingFaceDataset(Dataset):
             dataset.map(
                 HuggingFaceDataset.transform,
                 batched=True,
-                batch_size=min(128, len(dataset) // options.pool_size + 1),
-                num_proc=options.pool_size,
+                batch_size=min(128, len(dataset) // options.n_jobs + 1),
+                num_proc=options.n_jobs,
                 load_from_cache_file=False,
                 fn_kwargs=dict(options=options),
                 new_fingerprint=str(hash(cache_filename)),
@@ -60,13 +64,13 @@ class HuggingFaceDataset(Dataset):
     @staticmethod
     def transform(data: dict, options: DatasetOptions) -> dict:
         import torch
-        from torchvision.transforms.functional import resize
         from lcmr.renderer.renderer2d import Renderer2D
+        from torchvision.transforms.functional import resize
 
-        batch = data["image"].to(options.device)
+        batch = data["image"].to(options.renderer_device)
         batch = resize(batch.permute(0, 3, 1, 2), options.raster_size, antialias=True).permute(0, 2, 3, 1)
         batch = batch.to(torch.float32) / 255
-        background = options.background_color[None, None, None, ...].to(options.device)
+        background = options.background_color[None, None, None, ...].to(options.renderer_device)
         batch = Renderer2D.alpha_compositing(batch, background)[..., :3]
         batch = (batch * 255).to(torch.uint8)
         batch = batch.cpu()

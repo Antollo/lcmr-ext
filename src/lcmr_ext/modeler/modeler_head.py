@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
-from torchtyping import TensorType
-from transformers.models.detr.modeling_detr import DetrMLPPredictionHead
-
 from lcmr.grammar import Scene
 from lcmr.grammar.shapes import Shape2D
 from lcmr.modeler import Modeler
-from lcmr.utils.guards import typechecked, batch_dim, object_dim
+from lcmr.utils.guards import batch_dim, object_dim, typechecked
+from torchtyping import TensorType
+from transformers.models.detr.modeling_detr import DetrMLPPredictionHead
+
 from lcmr_ext.modeler.efd_module import EfdModule
 from lcmr_ext.modeler.modeler_config import ModelerConfig
 
@@ -70,7 +70,7 @@ class ModelerHead(Modeler):
 
         background_color = torch.sigmoid(self.to_background_color(hidden_state.mean(dim=-2)))
 
-        objectShape = Shape2D.FOURIER_SHAPE.value if self.to_efd != None else Shape2D.DISK.value
+        objectShape = Shape2D.EFD_SHAPE.value if self.to_efd != None else Shape2D.DISK.value
 
         return Scene.from_tensors_sparse(
             translation=translation,
@@ -78,7 +78,7 @@ class ModelerHead(Modeler):
             color=color,
             confidence=confidence,
             angle=angle,
-            fourierCoefficients=efd,
+            efd=efd,
             objectShape=torch.ones((batch_size, 1, self.num_queries, 1), dtype=torch.uint8, device=device) * objectShape,
             backgroundColor=background_color,
             device=device,

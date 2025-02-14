@@ -1,18 +1,13 @@
 import torch
 import torch.nn as nn
-from torchtyping import TensorType
-from transformers.models.conditional_detr.modeling_conditional_detr import (
-    ConditionalDetrEncoder,
-    ConditionalDetrDecoder,
-    ConditionalDetrMLPPredictionHead,
-    build_position_encoding,
-)
-from transformers.models.conditional_detr import ConditionalDetrConfig
-
 from lcmr.grammar import Scene
 from lcmr.grammar.shapes import Shape2D
 from lcmr.modeler import Modeler
-from lcmr.utils.guards import typechecked, batch_dim, reduced_height_dim, reduced_width_dim, channel_dim
+from lcmr.utils.guards import batch_dim, channel_dim, reduced_height_dim, reduced_width_dim, typechecked
+from torchtyping import TensorType
+from transformers.models.conditional_detr.configuration_conditional_detr import ConditionalDetrConfig
+from transformers.models.conditional_detr.modeling_conditional_detr import ConditionalDetrDecoder, ConditionalDetrEncoder, ConditionalDetrMLPPredictionHead, build_position_encoding
+
 from lcmr_ext.modeler.efd_module import EfdModule
 from lcmr_ext.modeler.modeler_config import ModelerConfig
 
@@ -30,7 +25,8 @@ class ConditionalDETRModeler(Modeler):
         self.use_single_scale = config.use_single_scale
         self.num_queries = detr_config.num_queries
 
-        self.input_projection = nn.Conv2d(config.encoder_feature_dim, detr_config.d_model, kernel_size=1)
+        # nn.GroupNorm(1, config.encoder_feature_dim)
+        self.input_projection = nn.Sequential(nn.BatchNorm2d(config.encoder_feature_dim), nn.Conv2d(config.encoder_feature_dim, detr_config.d_model, kernel_size=1, bias=False))
         self.query_position_embedding = nn.Embedding(detr_config.num_queries, detr_config.d_model)
         self.position_encoding = build_position_encoding(detr_config)
 
@@ -39,9 +35,7 @@ class ConditionalDETRModeler(Modeler):
 
         # prediction heads
         def make_head(output_dim: int):
-            return ConditionalDetrMLPPredictionHead(
-                input_dim=detr_config.d_model, hidden_dim=detr_config.d_model, output_dim=output_dim, num_layers=config.prediction_head_layers
-            )
+            return ConditionalDetrMLPPredictionHead(input_dim=detr_config.d_model, hidden_dim=detr_config.d_model, output_dim=output_dim, num_layers=config.prediction_head_layers)
 
         self.to_translation = make_head(output_dim=2)
         self.to_scale = make_head(output_dim=(1 if self.use_single_scale else 2))
@@ -53,6 +47,7 @@ class ConditionalDETRModeler(Modeler):
         self.to_angle = make_head(output_dim=2)
         self.to_background_color = make_head(output_dim=3)
 
+        self.to_efd = None
         efd_module_config = config.efd_module_config
         if efd_module_config != None:
             efd_module_config.input_dim = detr_config.d_model
@@ -117,22 +112,22 @@ class ConditionalDETRModeler(Modeler):
             confidence = torch.ones((batch_size, 1, self.num_queries, 1), dtype=torch.float32, device=device)
 
         rotation_vec = torch.tanh(self.to_angle(hidden_state))
-        rotation_vec = nn.functional.normalize(rotation_vec, dim=-1)
-        angle = torch.atan2(rotation_vec[..., 0, None], rotation_vec[..., 1, None]).unsqueeze(1)
+        rotation_vec = nn.functional.normalize(rotation_vec, dim=-1).unsqueeze(1)
+        #angle = torch.atan2(rotation_vec[..., 0, None], rotation_vec[..., 1, None]).unsqueeze(1)
 
         efd = self.to_efd(hidden_state).unsqueeze(1) if self.to_efd != None else None
 
         background_color = torch.sigmoid(self.to_background_color(hidden_state.mean(dim=-2)))
 
-        objectShape = Shape2D.FOURIER_SHAPE.value if self.to_efd != None else Shape2D.DISK.value
+        objectShape = Shape2D.EFD_SHAPE.value if self.to_efd != None else Shape2D.DISK.value
 
         return Scene.from_tensors_sparse(
             translation=translation,
             scale=scale,
             color=color,
             confidence=confidence,
-            angle=angle,
-            fourierCoefficients=efd,
+            rotation_vec=rotation_vec,
+            efd=efd,
             objectShape=torch.ones((batch_size, 1, self.num_queries, 1), dtype=torch.uint8, device=device) * objectShape,
             backgroundColor=background_color,
             device=device,

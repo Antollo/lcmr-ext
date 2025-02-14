@@ -7,6 +7,14 @@ fonts*
 *.pickle
 *.svs
 *.run*.
+*.csv
+*.memmap
+*.zip
+*.Identifier
+*.state_dict
+*.h5
+*.npz
+*.pdf
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
